@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=700, initial-scale=1" />
+  <title>That Old Chestnut</title>
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'media',
+      theme: {
+        extend: {
+          fontWeight: { medium: '500' },
+          borderRadius: { '2xl': '1.5rem' },
+          maxWidth: { 'screen-sm': '700px' }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      min-height: 100vh;
+      background: linear-gradient(160deg,
+        #39143f 0%,  /* aubergine */
+        #774571 35%,
+        #ffefd8 100% /* peach */
+      );
+    }
+    @media (prefers-color-scheme: dark) {
+      body {
+        background: linear-gradient(160deg,
+          #1a071f 0%,
+          #3c1640 35%,
+          #f6c7c1 100%
+        );
+      }
+    }
+  </style>
+</head>
+<body class="min-h-full flex items-center justify-center transition-colors">
+  <main class="w-full max-w-screen-sm p-4 mx-auto">
+    <div class="flex justify-between items-center mb-4">
+      <h1 class="font-medium text-2xl text-[#FAF7F4]">That Old Chestnut</h1>
+      <div class="flex gap-2">
+        <button id="importBtn" title="Import JSON" class="rounded-xl px-3 py-1 bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-50 hover:bg-slate-300 dark:hover:bg-slate-700 transition">Import</button>
+        <button id="exportBtn" title="Export JSON" class="rounded-xl px-3 py-1 bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-50 hover:bg-slate-300 dark:hover:bg-slate-700 transition">Export</button>
+        <input id="importInput" type="file" accept="application/json" class="hidden" />
+      </div>
+    </div>
+
+    <form id="addForm" class="flex gap-2 mb-4 bg-white dark:bg-slate-800 rounded-2xl shadow-sm p-4 sticky top-2 z-10">
+      <input id="labelInput" required maxlength="64" placeholder="Label" class="flex-1 rounded-xl bg-slate-100 dark:bg-slate-700 px-3 py-2 text-slate-900 dark:text-slate-50 font-medium outline-none" />
+      <input id="textInput" required maxlength="400" placeholder="Text" class="flex-2 rounded-xl bg-slate-100 dark:bg-slate-700 px-3 py-2 text-slate-900 dark:text-slate-50 outline-none" />
+      <button type="submit" class="rounded-xl bg-slate-900 text-slate-50 font-medium px-4 py-2 shadow hover:bg-slate-700 transition">Add</button>
+    </form>
+
+    <section>
+      <ul id="snippetList" class="flex flex-col gap-4"></ul>
+    </section>
+
+    <section class="mt-8">
+      <button id="archiveToggle" class="flex items-center gap-2 font-medium text-slate-600 dark:text-slate-300 hover:underline focus:outline-none">
+        <svg id="archiveArrow" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M6 9l6 6 6-6"/>
+        </svg>
+        Show archived <span id="archiveCount" class="ml-1 text-xs bg-slate-200 dark:bg-slate-800 rounded px-2"></span>
+      </button>
+      <ul id="archiveList" class="hidden flex-col gap-4 mt-2"></ul>
+    </section>
+
+    <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white rounded-xl px-6 py-2 shadow-2xl opacity-0 pointer-events-none transition"></div>
+  </main>
+  <script type="module">
+    import Sortable from "https://unpkg.com/sortablejs@1.15.2/modular/sortable.core.esm.js";
+
+    // Pastel color palettes for borders
+    const COLOR_PALETTE = [
+      "border-rose-200", "border-orange-200", "border-amber-200", "border-lime-200",
+      "border-emerald-200", "border-sky-200", "border-indigo-200", "border-purple-200",
+      "border-fuchsia-200", "border-slate-200"
+    ];
+    const COLOR_PALETTE_DARK = [
+      "border-rose-900", "border-orange-900", "border-amber-900", "border-lime-900",
+      "border-emerald-900", "border-sky-900", "border-indigo-900", "border-purple-900",
+      "border-fuchsia-900", "border-slate-900"
+    ];
+
+    function uuidv4() {
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        let r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
+    }
+
+    const STORAGE_KEY = "clipboardHelper:v1";
+    let state = {
+      snippets: [],
+      archive: []
+    };
+
+    function save() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+    function load() {
+      try {
+        const data = JSON.parse(localStorage.getItem(STORAGE_KEY));
+        if (data && Array.isArray(data.snippets)) state = data;
+      } catch {}
+    }
+    function syncAndRender() {
+      save();
+      render();
+    }
+
+    const snippetList = document.getElementById("snippetList");
+    const archiveList = document.getElementById("archiveList");
+    const archiveToggle = document.getElementById("archiveToggle");
+    const archiveArrow = document.getElementById("archiveArrow");
+    const archiveCount = document.getElementById("archiveCount");
+    const toast = document.getElementById("toast");
+    const addForm = document.getElementById("addForm");
+    const labelInput = document.getElementById("labelInput");
+    const textInput = document.getElementById("textInput");
+    const exportBtn = document.getElementById("exportBtn");
+    const importBtn = document.getElementById("importBtn");
+    const importInput = document.getElementById("importInput");
+
+    function render() {
+      snippetList.innerHTML = "";
+      state.snippets.forEach((snip, idx) =>
+        snippetList.appendChild(makeSnippetCard(snip, idx, false))
+      );
+      archiveList.innerHTML = "";
+      state.archive.forEach((snip, idx) =>
+        archiveList.appendChild(makeSnippetCard(snip, idx, true))
+      );
+      archiveCount.textContent = state.archive.length;
+    }
+
+    // Helper to make the left border class
+    function borderClass(color) {
+      // Defaults for new snippets
+      return `${color || 'border-slate-200'} border-l-8`;
+    }
+
+    // Inline SVGs
+    const CopyIcon = `
+      <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 inline align-text-bottom" stroke="currentColor" fill="none" viewBox="0 0 24 24">
+        <rect x="9" y="9" width="13" height="13" rx="2" stroke-width="2"/>
+        <rect x="3" y="3" width="13" height="13" rx="2" stroke-width="2"/>
+      </svg>`;
+    const CopyPlusIcon = `
+      <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" stroke="currentColor" fill="none" viewBox="0 0 24 24">
+        <rect x="9" y="9" width="13" height="13" rx="2" stroke-width="2"/>
+        <rect x="3" y="3" width="13" height="13" rx="2" stroke-width="2"/>
+        <path d="M12 15v-6M9 12h6" stroke-width="2" stroke-linecap="round"/>
+      </svg>`;
+
+    const ArchiveIcon = `
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="4" rx="2" stroke-width="2"/><path d="M3 7h18v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" stroke-width="2"/></svg>
+    `;
+    const UnarchiveIcon = `
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="4" rx="2" stroke-width="2"/><path d="M9 21V9h6v12" stroke-width="2"/></svg>
+    `;
+    const DeleteIcon = `
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-width="2"/></svg>
+    `;
+
+    function makeSnippetCard(snip, idx, archived) {
+      const li = document.createElement("li");
+      li.tabIndex = 0;
+      li.className = `
+        group relative bg-white dark:bg-slate-800 rounded-2xl shadow-md p-4 pl-6 transition
+        hover:-translate-y-1 hover:shadow-xl flex items-center gap-4 outline-none focus:ring-2 ring-slate-300
+        ${archived ? "opacity-70" : ""}
+        ${borderClass(snip.color)}
+      `;
+
+      // CARD GRID: [label + copy][...spacer][copyplus][archive][delete]
+
+      // Label + inline Copy button
+      const labelRow = document.createElement("div");
+      labelRow.className = "flex items-center flex-shrink min-w-0";
+
+      const labelText = document.createElement("span");
+      labelText.className = "font-medium text-base text-slate-900 dark:text-slate-50 truncate";
+      labelText.textContent = snip.label;
+
+      // Copy button (icon button, slightly right of label)
+      const copyBtn = document.createElement("button");
+      copyBtn.innerHTML = CopyIcon;
+      copyBtn.title = "Copy text";
+      copyBtn.className = "ml-3 text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 rounded-lg p-1 transition focus:outline-none";
+      copyBtn.onclick = e => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(snip.text).then(() => showToast("Copied!"));
+      };
+
+      labelRow.appendChild(labelText);
+      labelRow.appendChild(copyBtn);
+
+      // If archived, badge
+      if (archived) {
+        const archBadge = document.createElement("span");
+        archBadge.className = "ml-3 text-xs bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-200 rounded px-2 py-0.5";
+        archBadge.textContent = "Archived";
+        labelRow.appendChild(archBadge);
+      }
+
+      // Main content: label row on top, text below
+      const contentDiv = document.createElement("div");
+      contentDiv.className = "flex-1 min-w-0 cursor-pointer";
+      contentDiv.appendChild(labelRow);
+      const textDiv = document.createElement("div");
+      textDiv.className = "text-sm text-slate-500 dark:text-slate-300 truncate max-w-xs";
+      textDiv.textContent = snip.text;
+      contentDiv.appendChild(textDiv);
+
+      // Whole card: click to copy main text
+      contentDiv.onclick = () => {
+        navigator.clipboard.writeText(snip.text).then(() => showToast("Copied!"));
+      };
+      li.addEventListener("keydown", e => {
+        if ((e.key === "c" || e.key === "C")) {
+          e.preventDefault();
+          navigator.clipboard.writeText(snip.text).then(() => showToast("Copied!"));
+        }
+      });
+
+      // Buttons: CopyPlus, Archive/Unarchive, Delete
+      const controlsDiv = document.createElement("div");
+      controlsDiv.className = "flex items-center gap-2 ml-2";
+
+      // CopyPlus button
+      const copyPlusBtn = document.createElement("button");
+      copyPlusBtn.innerHTML = CopyPlusIcon;
+      copyPlusBtn.title = "Copy label & text for sharing";
+      copyPlusBtn.className = "text-slate-400 hover:text-blue-700 dark:hover:text-blue-300 rounded-lg p-1 transition focus:outline-none";
+      copyPlusBtn.onclick = e => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(`${snip.label}:  ${snip.text}`).then(() => showToast("Label + Text copied!"));
+      };
+      controlsDiv.appendChild(copyPlusBtn);
+
+      // Archive or Unarchive button
+      if (!archived) {
+        const archiveBtn = document.createElement("button");
+        archiveBtn.innerHTML = ArchiveIcon;
+        archiveBtn.title = "Archive";
+        archiveBtn.className = "text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 rounded-lg p-1 transition";
+        archiveBtn.onclick = e => {
+          e.stopPropagation();
+          state.archive.unshift({...snip});
+          state.snippets.splice(idx, 1);
+          syncAndRender();
+        };
+        controlsDiv.appendChild(archiveBtn);
+      } else {
+        const unarchiveBtn = document.createElement("button");
+        unarchiveBtn.innerHTML = UnarchiveIcon;
+        unarchiveBtn.title = "Unarchive";
+        unarchiveBtn.className = "text-slate-400 hover:text-slate-900 dark:hover:text-slate-50 rounded-lg p-1 transition";
+        unarchiveBtn.onclick = e => {
+          e.stopPropagation();
+          state.snippets.unshift({...snip});
+          state.archive.splice(idx, 1);
+          syncAndRender();
+        };
+        controlsDiv.appendChild(unarchiveBtn);
+      }
+      // Delete button
+      const deleteBtn = document.createElement("button");
+      deleteBtn.innerHTML = DeleteIcon;
+      deleteBtn.title = "Delete";
+      deleteBtn.className = "text-slate-400 hover:text-red-500 rounded-lg p-1 transition";
+      deleteBtn.onclick = e => {
+        e.stopPropagation();
+        (archived ? state.archive : state.snippets).splice(idx, 1);
+        syncAndRender();
+      };
+      controlsDiv.appendChild(deleteBtn);
+
+      li.appendChild(contentDiv);
+      li.appendChild(controlsDiv);
+      return li;
+    }
+
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.remove("opacity-0", "pointer-events-none");
+      toast.classList.add("opacity-100");
+      setTimeout(() => {
+        toast.classList.remove("opacity-100");
+        toast.classList.add("opacity-0", "pointer-events-none");
+      }, 1200);
+    }
+
+    // --- Assign color on add ---
+    addForm.onsubmit = e => {
+      e.preventDefault();
+      const label = labelInput.value.trim();
+      const text = textInput.value.trim();
+      if (!label || !text) return;
+      const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const palette = isDark ? COLOR_PALETTE_DARK : COLOR_PALETTE;
+      state.snippets.unshift({
+        id: uuidv4(),
+        label, text, archived: false,
+        color: palette[Math.floor(Math.random() * palette.length)]
+      });
+      syncAndRender();
+      addForm.reset();
+      labelInput.focus();
+    };
+
+    let archiveOpen = false;
+    archiveToggle.onclick = () => {
+      archiveOpen = !archiveOpen;
+      archiveList.classList.toggle("hidden", !archiveOpen);
+      archiveArrow.style.transform = archiveOpen ? "rotate(180deg)" : "rotate(0deg)";
+    };
+
+    exportBtn.onclick = () => {
+      const now = new Date();
+      const fn = `snippets-${now.toISOString().split('T')[0]}.json`;
+      const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = fn;
+      a.click();
+    };
+
+    importBtn.onclick = () => {
+      importInput.click();
+    };
+    importInput.onchange = e => {
+      const file = importInput.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = evt => {
+        try {
+          const imported = JSON.parse(evt.target.result);
+          if (imported.snippets && Array.isArray(imported.snippets)) {
+            const allIds = new Set([...state.snippets, ...state.archive].map(s => s.id));
+            const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const palette = isDark ? COLOR_PALETTE_DARK : COLOR_PALETTE;
+            imported.snippets.forEach(s => {
+              if (!allIds.has(s.id)) {
+                if (!s.color) s.color = palette[Math.floor(Math.random() * palette.length)];
+                state.snippets.push(s);
+              }
+            });
+            (imported.archive||[]).forEach(s => {
+              if (!allIds.has(s.id)) {
+                if (!s.color) s.color = palette[Math.floor(Math.random() * palette.length)];
+                state.archive.push(s);
+              }
+            });
+            syncAndRender();
+            showToast("Imported!");
+          }
+        } catch {}
+        importInput.value = "";
+      };
+      reader.readAsText(file);
+    };
+
+    // --- Drag and Drop with SortableJS ---
+    let sortableActive = false;
+    function enableDragDrop() {
+      sortableActive = true;
+      window.sortableActive = true;
+      Sortable.create(snippetList, {
+        animation: 180,
+        handle: ".flex-1,.min-w-0", // the main card content
+        draggable: "li",
+        onEnd: function (evt) {
+          const [moved] = state.snippets.splice(evt.oldIndex, 1);
+          state.snippets.splice(evt.newIndex, 0, moved);
+          syncAndRender();
+        }
+      });
+    }
+
+    load();
+    render();
+    setTimeout(() => {
+      if (window.Sortable || typeof Sortable !== "undefined") enableDragDrop();
+    }, 500);
+    if (window.matchMedia('(prefers-color-scheme: dark)').matches)
+      document.documentElement.classList.add('dark');
+    document.addEventListener('keydown', e => {
+      if (e.target.tagName !== "INPUT" && e.key === "/") {
+        e.preventDefault();
+        labelInput.focus();
+      }
+    });
+  </script>
+</body>
+</html>
